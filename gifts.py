@@ -2,18 +2,21 @@ import asyncio
 import logging
 import os
 import time
+import random
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher
-from aiogram.methods import GetAvailableGifts
-from aiogram.types import Gifts, InputFile
+from aiogram.methods import GetAvailableGifts, CreateNewStickerSet, SendSticker
+from aiogram.types import Gifts, InputFile, InputSticker
 
 # Загружаем переменные из .env
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
+USER_ID = int(os.getenv("USER_ID"))  # ID пользователя, который будет владельцем набора стикеров
+BOT_USERNAME = os.getenv("BOT_USERNAME")  # Имя вашего бота (без @)
 
-if not BOT_TOKEN or not CHANNEL_ID:
-    logging.error("Не удалось загрузить токен или ID канала из .env файла.")
+if not BOT_TOKEN or not CHANNEL_ID or not USER_ID or not BOT_USERNAME:
+    logging.error("Не удалось загрузить токен, ID канала, USER_ID или BOT_USERNAME из .env файла.")
     exit(1)
 
 # Настройка логирования
@@ -75,6 +78,58 @@ async def send_gift_info(gift):
         logger.error(f"Ошибка при отправке информации о подарке: {e}")
 
 
+async def create_sticker_set_from_gifts(gifts):
+    """
+    Создает набор стикеров из подарков.
+    """
+    try:
+        stickers = []
+        for gift in gifts:
+            # Определяем формат стикера
+            sticker_format = "animated" if gift.sticker.is_animated else "static"
+
+            # Создаем объект InputSticker
+            stickers.append(InputSticker(
+                sticker=gift.sticker.file_id,  # Используем file_id стикера
+                emoji_list=[gift.sticker.emoji],  # Используем эмодзи стикера
+                format=sticker_format  # Указываем формат стикера
+            ))
+
+        # Генерируем уникальное имя набора стикеров
+        random_suffix = random.randint(1000, 9999)  # Добавляем случайное число
+        sticker_set_name = f"test2423ksj_{random_suffix}_by_{BOT_USERNAME}"  # Уникальное имя набора
+
+        # Создаем набор стикеров
+        await bot(CreateNewStickerSet(
+            user_id=USER_ID,
+            name=sticker_set_name,  # Имя набора стикеров
+            title="Gift Stickers",  # Заголовок набора
+            stickers=stickers,  # Список стикеров
+            sticker_type="regular"  # Тип набора (обычные стикеры)
+        ))
+        logger.info(f"Набор стикеров '{sticker_set_name}' успешно создан.")
+        return sticker_set_name
+    except Exception as e:
+        logger.error(f"Ошибка при создании набора стикеров: {e}")
+        return None
+
+
+async def send_stickers_from_set(sticker_set_name):
+    """
+    Отправляет стикеры из набора в указанный чат.
+    """
+    try:
+        # Получаем информацию о наборе стикеров
+        sticker_set = await bot.get_sticker_set(name=sticker_set_name)
+
+        # Отправляем каждый стикер в чат
+        for sticker in sticker_set.stickers:
+            await bot(SendSticker(chat_id=CHANNEL_ID, sticker=sticker.file_id))
+            logger.info(f"Стикер {sticker.file_id} отправлен в чат {CHANNEL_ID}.")
+    except Exception as e:
+        logger.error(f"Ошибка при отправке стикеров: {e}")
+
+
 async def check_new_gifts():
     global known_gifts, first_run
     current_gifts = await get_available_gifts()
@@ -95,9 +150,19 @@ async def check_new_gifts():
         )
         await send_notification(all_gifts_info)
         logger.info("Первый запуск: отправлены все доступные подарки.")
+
+        # Создаем набор стикеров из всех доступных подарков
+        sticker_set_name = await create_sticker_set_from_gifts(new_gifts)
+        if sticker_set_name:
+            await send_stickers_from_set(sticker_set_name)
     elif new_gifts:
         await asyncio.gather(*(send_gift_info(gift) for gift in new_gifts))
         logger.info(f"Обнаружены новые подарки: {[gift.id for gift in new_gifts]}")
+
+        # Создаем набор стикеров из новых подарков
+        sticker_set_name = await create_sticker_set_from_gifts(new_gifts)
+        if sticker_set_name:
+            await send_stickers_from_set(sticker_set_name)
     else:
         logger.info("Новых подарков нет.")
 
