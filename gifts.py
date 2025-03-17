@@ -29,6 +29,8 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 known_gifts = {}
+sent_stickers = set()  # Множество для отслеживания отправленных стикеров
+existing_stickers = set()  # Множество для отслеживания стикеров, которые уже добавлены в стикерпак
 
 # Загружаем сохраненные ID подарков из файла
 def load_known_gifts():
@@ -56,33 +58,40 @@ async def create_sticker_set_from_gifts(gifts):
     try:
         await bot(CreateNewStickerSet(user_id=USER_ID, name=STICKER_SET_NAME, title="Gift Stickers", stickers=stickers, sticker_type="regular"))
         logger.info(f"Стикерпак '{STICKER_SET_NAME}' создан.")
+        # Добавляем все новые стикеры в список существующих
+        for gift in gifts:
+            existing_stickers.add(gift.sticker.file_id)
     except Exception as e:
         logger.error(f"Ошибка создания стикерпака: {e}")
 
 async def add_stickers_to_set(gifts):
     """Добавляет новые стикеры в существующий стикерпак."""
     for gift in gifts:
-        try:
-            sticker = InputSticker(sticker=gift.sticker.file_id, emoji_list=[gift.sticker.emoji], format="static")
-            await bot(AddStickerToSet(user_id=USER_ID, name=STICKER_SET_NAME, sticker=sticker))
-            logger.info(f"Стикер {gift.sticker.file_id} добавлен в {STICKER_SET_NAME}.")
-        except Exception as e:
-            logger.error(f"Ошибка добавления стикера {gift.sticker.file_id}: {e}")
+        if gift.sticker.file_id not in existing_stickers:
+            try:
+                sticker = InputSticker(sticker=gift.sticker.file_id, emoji_list=[gift.sticker.emoji], format="static")
+                await bot(AddStickerToSet(user_id=USER_ID, name=STICKER_SET_NAME, sticker=sticker))
+                existing_stickers.add(gift.sticker.file_id)  # Добавляем стикер в множество существующих
+                sent_stickers.add(gift.sticker.file_id)  # Добавляем стикер в множество отправленных
+                logger.info(f"Стикер {gift.sticker.file_id} добавлен в {STICKER_SET_NAME} и помечен как отправленный.")
+            except Exception as e:
+                logger.error(f"Ошибка добавления стикера {gift.sticker.file_id}: {e}")
 
 async def send_stickers_from_set():
-    """Отправляет стикеры из набора."""
+    """Отправляет стикеры из набора в канал."""
     try:
         sticker_set = await bot(GetStickerSet(name=STICKER_SET_NAME))
         for sticker in sticker_set.stickers:
-            await bot(SendSticker(chat_id=CHANNEL_ID, sticker=sticker.file_id))
-            logger.info(f"Отправлен стикер {sticker.file_id}.")
+            if sticker.file_id not in sent_stickers:  # Проверка на уникальность
+                await bot(SendSticker(chat_id=CHANNEL_ID, sticker=sticker.file_id))
+                sent_stickers.add(sticker.file_id)  # Добавляем в множество отправленных стикеров
+                logger.info(f"Отправлен стикер {sticker.file_id} в канал.")
     except Exception as e:
-        logger.error(f"Ошибка отправки стикеров: {e}")
+        logger.error(f"Ошибка при отправке стикеров: {e}")
 
 async def send_notification(message: str):
     """Отправляет текстовое уведомление в канал и возвращает объект сообщения."""
     try:
-        # Отправляем сообщение с использованием HTML-разметки, но без тега <br>
         post_message = await bot.send_message(
             chat_id=CHANNEL_ID,
             text=message.replace('<br>', '\n'),
@@ -90,21 +99,18 @@ async def send_notification(message: str):
             disable_web_page_preview=True
         )
         logger.info("Отправлено текстовое сообщение.")
-        return post_message  # Возвращаем объект сообщения
+        return post_message
     except Exception as e:
         logger.error(f"Ошибка при отправке сообщения: {e}")
         return None
 
-
 async def check_for_upgrades():
     """Проверка апгрейдов."""
     try:
-        # Здесь можно добавить логику для проверки апгрейдов, например, изменения команд бота
         upgrades = await bot.get_my_commands()  # Пример проверки команд
         if upgrades:
             logger.info("Обнаружены апгрейды.")
-            # Формируем сообщение об апгрейде
-            await send_notification(f"<b>🚀 Обнаружены апгрейды:</b> <i>{', '.join([cmd.command for cmd in upgrades])}</i>")
+            await send_notification(f"<b>🚀 New upgrades available!:</b> <i>{', '.join([cmd.command for cmd in upgrades])}</i>")
         else:
             logger.info("Апгрейдов нет.")
     except Exception as e:
@@ -115,30 +121,21 @@ async def check_new_gifts():
     current_gifts = await bot(GetAvailableGifts())
     new_gifts = [gift for gift in current_gifts.gifts if gift.id not in known_gifts]
 
-    # Обновляем список известных подарков
     known_gifts.update({gift.id: time.time() for gift in new_gifts})
-
-    # Сохраняем обновленные данные
     save_known_gifts()
 
     if new_gifts:
-        logger.info(f"Обнаружены новые подарки.")
-
-        # Формируем текстовое сообщение о новых подарках без emoji и ID
+        logger.info(f"NEW GIFTS ALERT.")
         gift_info = "\n\n".join(
-            f"<b>Новый подарок:</b> {gift.title if hasattr(gift, 'title') else 'Без названия'}\n"
-            f"<b>Звезды:</b> {gift.star_count}\n"
-            f"<b>Осталось:</b> {gift.remaining_count if gift.remaining_count else '∞'}" for gift in new_gifts
+            f" <b>new gift:</b> \n"
+            f"<b>price:</b> <code>{gift.star_count}</code>★\n"
+            f"<b>supply:</b> <code>{gift.total_count if gift.total_count else '∞'}</code>" for gift in new_gifts
         )
 
-        # Отправляем текстовое сообщение и получаем объект сообщения
-        post_message = await send_notification(f"<b>🎉 Новые подарки:</b><br>{gift_info}")
+        post_message = await send_notification(f"<b>🎉 New Gifts:</b><br>{gift_info}")
 
         if post_message is not None:
-            # Получаем ID поста с подарками
             post_message_id = post_message.message_id
-
-            # Отправляем стикеры в комментариях к посту
             await send_stickers_in_comments(post_message_id)
 
             if not await sticker_set_exists(STICKER_SET_NAME):
@@ -152,33 +149,34 @@ async def check_new_gifts():
     else:
         logger.info("Новых подарков нет.")
 
-
 async def send_stickers_in_comments(post_message_id):
-    """Отправляет стикеры в комментариях к посту."""
+    """Отправляет стикеры в комментарии к посту, избегая повторной отправки и добавления в стикерпак."""
     try:
         sticker_set = await bot(GetStickerSet(name=STICKER_SET_NAME))  # Получаем стикерпак
-        for sticker in sticker_set.stickers:  # Проходим по всем стикерам в паке
-            # Отправляем стикер как комментарий к посту, используя reply_to_message_id
-            await bot(SendSticker(
-                chat_id=CHANNEL_ID,
-                sticker=sticker.file_id,
-                reply_to_message_id=post_message_id  # Указываем ID сообщения, к которому будет комментарий
-            ))
-            logger.info(f"Отправлен стикер {sticker.file_id} в комментарий к посту с ID {post_message_id}.")
+        for sticker in sticker_set.stickers:
+            if sticker.file_id not in sent_stickers:  # Проверяем, был ли уже отправлен стикер
+                await bot(SendSticker(
+                    chat_id=CHANNEL_ID,
+                    sticker=sticker.file_id,
+                    reply_to_message_id=post_message_id  # Отправка в комментарии
+                ))
+                sent_stickers.add(sticker.file_id)  # Добавляем в множество отправленных стикеров
+                logger.info(f"Отправлен стикер {sticker.file_id} в комментарий к посту с ID {post_message_id}.")
+            else:
+                logger.info(f"Стикер {sticker.file_id} уже был отправлен ранее, пропущен.")
     except Exception as e:
-        logger.error(f"Ошибка отправки стикеров в комментарии: {e}")
+        logger.error(f"Ошибка при отправке стикеров в комментарии: {e}")
 
 async def main():
     global known_gifts
     logger.info("Запуск бота...")
 
-    # Загружаем подарки из файла при запуске бота
     known_gifts = load_known_gifts()
 
     while True:
-        await check_new_gifts()  # Проверка новых подарков
-        await check_for_upgrades()  # Проверка апгрейдов
-        await asyncio.sleep(10)  # Пауза между проверками
+        await check_new_gifts()
+        await check_for_upgrades()
+        await asyncio.sleep(10)
 
 if __name__ == '__main__':
     try:
