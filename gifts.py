@@ -1,14 +1,14 @@
-import asyncio
-import logging
 import os
-import time
 import json
-from dotenv import load_dotenv
+import logging
+import asyncio
 from aiogram import Bot, Dispatcher
 from aiogram.methods import GetAvailableGifts, CreateNewStickerSet, AddStickerToSet, SendSticker, GetStickerSet
 from aiogram.types import Gifts, InputSticker
 
 # Загружаем переменные из .env
+from dotenv import load_dotenv
+
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
@@ -32,18 +32,74 @@ known_gifts = {}
 sent_stickers = set()  # Множество для отслеживания отправленных стикеров
 existing_stickers = set()  # Множество для отслеживания стикеров, которые уже добавлены в стикерпак
 
+
 # Загружаем сохраненные ID подарков из файла
 def load_known_gifts():
+    """Загружает данные о подарках из known_gifts.json."""
     if os.path.exists("known_gifts.json"):
         with open("known_gifts.json", "r") as f:
             return json.load(f)
     return {}
 
+
 # Сохраняем подарки в файл
 def save_known_gifts():
+    """Сохраняет данные о подарках в known_gifts.json."""
     with open("known_gifts.json", "w") as f:
         json.dump(known_gifts, f)
 
+
+# Загружаем данные о подарках из gifts.json
+def load_gifts_from_json():
+    """Загружает данные о подарках из gifts.json."""
+    if os.path.exists("gifts.json"):
+        with open("gifts.json", "r") as f:
+            return json.load(f)
+    return {}
+
+
+# Сохраняем подарки в gifts.json
+def save_gifts_to_json(gifts):
+    """Сохраняет подарки в файл gifts.json."""
+    gifts_data = {}
+    if os.path.exists("gifts.json"):
+        with open("gifts.json", "r") as f:
+            gifts_data = json.load(f)
+
+    for gift in gifts:
+        gifts_data[gift.id] = {
+            "emoji": gift.sticker.emoji,  # Используем emoji вместо name
+            "star_count": gift.star_count,
+            "total_count": gift.total_count,
+            "remaining_count": gift.remaining_count,
+            "sticker_id": gift.sticker.file_id
+        }
+
+    with open("gifts.json", "w") as f:
+        json.dump(gifts_data, f, indent=4)
+
+
+# Загружаем данные о подарках, для которых уже отправлены уведомления
+def load_notified_gifts():
+    """Загружает данные о подарках, для которых уже отправлены уведомления."""
+    if not os.path.exists("notified_gifts.json"):
+        # Если файл не существует, создаём пустой файл
+        with open("notified_gifts.json", "w") as f:
+            json.dump({}, f)
+        return {}
+
+    with open("notified_gifts.json", "r") as f:
+        return json.load(f)
+
+
+# Сохраняем данные о подарках, для которых отправлены уведомления
+def save_notified_gifts(notified_gifts):
+    """Сохраняет данные о подарках, для которых отправлены уведомления."""
+    with open("notified_gifts.json", "w") as f:
+        json.dump(notified_gifts, f, indent=4)
+
+
+# Проверяем существование стикерпака
 async def sticker_set_exists(name):
     """Проверяет существование стикерпака."""
     try:
@@ -52,11 +108,15 @@ async def sticker_set_exists(name):
     except:
         return False
 
+
+# Создаём стикерпак, если его нет
 async def create_sticker_set_from_gifts(gifts):
     """Создаёт стикерпак, если его нет."""
-    stickers = [InputSticker(sticker=gift.sticker.file_id, emoji_list=[gift.sticker.emoji], format="static") for gift in gifts]
+    stickers = [InputSticker(sticker=gift.sticker.file_id, emoji_list=[gift.sticker.emoji], format="static") for gift in
+                gifts]
     try:
-        await bot(CreateNewStickerSet(user_id=USER_ID, name=STICKER_SET_NAME, title="Gift Stickers", stickers=stickers, sticker_type="regular"))
+        await bot(CreateNewStickerSet(user_id=USER_ID, name=STICKER_SET_NAME, title="Gift Stickers", stickers=stickers,
+                                      sticker_type="regular"))
         logger.info(f"Стикерпак '{STICKER_SET_NAME}' создан.")
         # Добавляем все новые стикеры в список существующих
         for gift in gifts:
@@ -64,6 +124,8 @@ async def create_sticker_set_from_gifts(gifts):
     except Exception as e:
         logger.error(f"Ошибка создания стикерпака: {e}")
 
+
+# Добавляем новые стикеры в существующий стикерпак
 async def add_stickers_to_set(gifts):
     """Добавляет новые стикеры в существующий стикерпак."""
     for gift in gifts:
@@ -77,6 +139,8 @@ async def add_stickers_to_set(gifts):
             except Exception as e:
                 logger.error(f"Ошибка добавления стикера {gift.sticker.file_id}: {e}")
 
+
+# Отправляем стикеры из набора в канал
 async def send_stickers_from_set():
     """Отправляет стикеры из набора в канал."""
     try:
@@ -89,8 +153,10 @@ async def send_stickers_from_set():
     except Exception as e:
         logger.error(f"Ошибка при отправке стикеров: {e}")
 
+
+# Отправляем текстовое уведомление в канал
 async def send_notification(message: str):
-    """Отправляет текстовое уведомление в канал и возвращает объект сообщения."""
+    """Отправляет текстовое уведомление в канал."""
     try:
         post_message = await bot.send_message(
             chat_id=CHANNEL_ID,
@@ -104,18 +170,82 @@ async def send_notification(message: str):
         logger.error(f"Ошибка при отправке сообщения: {e}")
         return None
 
-async def check_for_upgrades():
-    """Проверка апгрейдов."""
-    try:
-        upgrades = await bot.get_my_commands()  # Пример проверки команд
-        if upgrades:
-            logger.info("Обнаружены апгрейды.")
-            await send_notification(f"<b>🚀 New upgrades available!:</b> <i>{', '.join([cmd.command for cmd in upgrades])}</i>")
-        else:
-            logger.info("Апгрейдов нет.")
-    except Exception as e:
-        logger.error(f"Ошибка при проверке апгрейдов: {e}")
 
+async def check_remaining_count(gift):
+    """Проверяет, осталось ли меньше 11% подарков, и отправляет уведомление, если оно ещё не было отправлено."""
+    if gift.total_count and gift.remaining_count:
+        remaining_percentage = (gift.remaining_count / gift.total_count) * 100
+        if remaining_percentage < 11:
+            # Загружаем данные о подарках из gifts.json
+            gifts_data = load_gifts_from_json()
+            if str(gift.id) in gifts_data:
+                # Загружаем данные о подарках, для которых уже отправлены уведомления
+                notified_gifts = load_notified_gifts()
+                if str(gift.id) not in notified_gifts:
+                    emoji = gifts_data[str(gift.id)].get("emoji", "")
+                    name = gifts_data[str(gift.id)].get("name", "")
+
+                    # Формируем сообщение с названием, если оно есть
+                    if name:
+                        message = (
+                            f"⚠️ <b>Внимание!</b> Подарок <b>{name} {emoji}</b> заканчивается! "
+                            f"Осталось <code>{gift.remaining_count}</code> шт. (<code>{remaining_percentage:.2f}%</code>)."
+                        )
+                    else:
+                        message = (
+                            f"⚠️ <b>Внимание!</b> Подарок <b>{emoji}</b> заканчивается! "
+                            f"Осталось <code>{gift.remaining_count}</code> шт. (<code>{remaining_percentage:.2f}%</code>)."
+                        )
+
+                    # Отправляем уведомление
+                    await send_notification(message)
+
+                    # Добавляем подарок в список уведомлённых
+                    notified_gifts[str(gift.id)] = True
+                    save_notified_gifts(notified_gifts)  # Сохраняем обновлённые данные
+                    logger.info(f"Отправлено уведомление для подарка {emoji}.")
+                else:
+                    logger.info(f"Уведомление для подарка {gift.id} уже было отправлено ранее.")
+            else:
+                logger.warning(f"Подарок с ID {gift.id} не найден в gifts.json.")
+
+
+async def check_if_gift_is_out_of_stock(gift):
+    """Проверяет, закончились ли подарки, и отправляет уведомление, если оно ещё не было отправлено."""
+    if gift.remaining_count == 0:
+        # Загружаем данные о подарках из gifts.json
+        gifts_data = load_gifts_from_json()
+        if str(gift.id) in gifts_data:
+            # Загружаем данные о подарках, для которых уже отправлены уведомления
+            notified_gifts = load_notified_gifts()
+            if str(gift.id) not in notified_gifts:
+                emoji = gifts_data[str(gift.id)].get("emoji", "")
+                name = gifts_data[str(gift.id)].get("name", "")
+
+                # Формируем сообщение с названием, если оно есть
+                if name:
+                    message = (
+                        f"🚨 <b>Подарок закончился!</b> Подарок <b>{name} {emoji}</b> больше недоступен."
+                    )
+                else:
+                    message = (
+                        f"🚨 <b>Подарок закончился!</b> Подарок <b>{emoji}</b> больше недоступен."
+                    )
+
+                # Отправляем уведомление
+                await send_notification(message)
+
+                # Добавляем подарок в список уведомлённых
+                notified_gifts[str(gift.id)] = True
+                save_notified_gifts(notified_gifts)  # Сохраняем обновлённые данные
+                logger.info(f"Отправлено уведомление для подарка {emoji}.")
+            else:
+                logger.info(f"Уведомление для подарка {gift.id} уже было отправлено ранее.")
+        else:
+            logger.warning(f"Подарок с ID {gift.id} не найден в gifts.json.")
+
+
+# Проверяем новые подарки
 async def check_new_gifts():
     global known_gifts
     current_gifts = await bot(GetAvailableGifts())
@@ -149,6 +279,16 @@ async def check_new_gifts():
     else:
         logger.info("Новых подарков нет.")
 
+    # Сохраняем подарки в gifts.json
+    save_gifts_to_json(current_gifts.gifts)
+
+    # Проверяем оставшееся количество подарков
+    for gift in current_gifts.gifts:
+        await check_remaining_count(gift)
+        await check_if_gift_is_out_of_stock(gift)
+
+
+# Отправляем стикеры в комментарии к посту
 async def send_stickers_in_comments(post_message_id):
     """Отправляет стикеры в комментарии к посту, избегая повторной отправки и добавления в стикерпак."""
     try:
@@ -167,19 +307,23 @@ async def send_stickers_in_comments(post_message_id):
     except Exception as e:
         logger.error(f"Ошибка при отправке стикеров в комментарии: {e}")
 
+
+# Основная функция
 async def main():
     global known_gifts
     logger.info("Запуск бота...")
 
     known_gifts = load_known_gifts()
 
-    while True:
-        await check_new_gifts()
-        await check_for_upgrades()
-        await asyncio.sleep(10)
-
-if __name__ == '__main__':
     try:
-        asyncio.run(main())
+        while True:
+            await check_new_gifts()
+            await asyncio.sleep(10)
     except KeyboardInterrupt:
         logger.info("Бот остановлен вручную.")
+    finally:
+        await bot.session.close()  # Закрываем сессию бота
+
+
+if __name__ == '__main__':
+    asyncio.run(main())
